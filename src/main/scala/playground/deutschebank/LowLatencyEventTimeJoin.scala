@@ -120,7 +120,7 @@ object LowLatencyEventTimeJoin {
 class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, EnrichedTrade] {
 
   private var tradeBufferState: ValueState[mutable.PriorityQueue[Trade]] = null
-  private var customerBufferState: ListState[Customer] = null
+  private var customerBufferState: ValueState[mutable.PriorityQueue[Customer]] = null
 
   // TODO: This will not work -- need to keep this value per trade
   private var initialJoinResultState: ValueState[EnrichedTrade] = null
@@ -129,16 +129,19 @@ class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, Enric
     implicit val tradeOrdering = Ordering.by((t: Trade) => t.timestamp)
     implicit val customerOrdering = Ordering.by((c: Customer) => c.timestamp)
     tradeBufferState = getRuntimeContext.getState(new ValueStateDescriptor[mutable.PriorityQueue[Trade]]("tradeBuffer", createTypeInformation[mutable.PriorityQueue[Trade]], new mutable.PriorityQueue[Trade]))
-    customerBufferState = getRuntimeContext.getListState(new ListStateDescriptor[Customer]("customerBuffer", createTypeInformation[Customer]))
+    customerBufferState = getRuntimeContext.getState(new ValueStateDescriptor[mutable.PriorityQueue[Customer]]("customerBuffer", createTypeInformation[mutable.PriorityQueue[Customer]], new mutable.PriorityQueue[Customer]))
     initialJoinResultState = getRuntimeContext.getState(new ValueStateDescriptor[EnrichedTrade]("initialJoinResult", createTypeInformation[EnrichedTrade], null))
   }
 
   override def processElement1(trade: Trade, context: Context, collector: Collector[EnrichedTrade]): Unit = {
+
+    // TODO : Handle late data -- probably detect and join against what, latest?  Drop it?
+
     val timerService = context.timerService()
     val joinedData = join(trade)
     initialJoinResultState.update(joinedData)
     collector.collect(joinedData)
-    if (timerService.currentWatermark() < context.timestamp()) {
+    if (context.timestamp() > timerService.currentWatermark()) {
       val tradeBuffer = tradeBufferState.value()
       tradeBuffer.enqueue(trade)
       tradeBufferState.update(tradeBuffer)
@@ -147,7 +150,9 @@ class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, Enric
   }
 
   override def processElement2(customer: Customer, context: Context, collector: Collector[EnrichedTrade]): Unit = {
-    customerBufferState.add(customer)
+    val customerBuffer = customerBufferState.value()
+    customerBuffer.enqueue(customer)
+    customerBufferState.update(customerBuffer)
   }
 
   override def onTimer(l: Long, context: OnTimerContext, collector: Collector[EnrichedTrade]): Unit = {
@@ -161,6 +166,18 @@ class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, Enric
         collector.collect(joinedData)
       }
     }
+    tradeBufferState.update(tradeBuffer)
+
+    cleanupCustomerBuffer(watermark)
+  }
+
+  private def cleanupCustomerBuffer(watermark: Long): Unit = {
+    // Keep all the customer data that is newer than the watermark PLUS
+    // the most recent element that is older than the watermark.
+    val customerBuffer = customerBufferState.value()
+    val (above, below) = customerBuffer.partition(_.timestamp >= watermark)
+    below.headOption.foreach(above.enqueue(_))
+    customerBufferState.update(above)
   }
 
   private def join(trade: Trade): EnrichedTrade = {
@@ -168,16 +185,11 @@ class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, Enric
     // doing this rather than jumping straight to the latest known info makes
     // this 100% deterministic.  If that's not a strict requirement we can simplify
     // this by joining against the latest available data right now.
-
-    // TODO: Still need to clean up stale customer data
-
-    val customerBuffer: Array[Customer] = customerBufferState.get.asScala.toArray
+    val customerBuffer = customerBufferState.value()
     val customerInfo = customerBuffer
       .filter(_.timestamp <= trade.timestamp)
-      .sortBy(_.timestamp)
-      .reverse
-      .map(_.customerInfo)
       .headOption
+      .map(_.customerInfo)
       .getOrElse("No customer info available")
 
     EnrichedTrade(trade, customerInfo)
