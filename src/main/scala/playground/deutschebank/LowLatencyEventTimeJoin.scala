@@ -156,7 +156,7 @@ class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, Enric
   }
 
   override def onTimer(l: Long, context: OnTimerContext, collector: Collector[EnrichedTrade]): Unit = {
-    // look for trades that can be completed now
+    // look for trades that can now be completed, do the join, and remove from the tradebuffer
     val tradeBuffer = tradeBufferState.value()
     val watermark = context.timerService().currentWatermark()
     while (tradeBuffer.headOption.map(_.timestamp).getOrElse(Long.MaxValue) <= watermark) {
@@ -168,10 +168,11 @@ class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, Enric
     }
     tradeBufferState.update(tradeBuffer)
 
-    cleanupCustomerBuffer(watermark)
+    // Cleanup all the customer data that is eligible
+    cleanupEligibleCustomerData(watermark)
   }
 
-  private def cleanupCustomerBuffer(watermark: Long): Unit = {
+  private def cleanupEligibleCustomerData(watermark: Long): Unit = {
     // Keep all the customer data that is newer than the watermark PLUS
     // the most recent element that is older than the watermark.
     val customerBuffer = customerBufferState.value()
