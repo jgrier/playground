@@ -1,19 +1,17 @@
 package playground.deutschebank
 
-import org.apache.flink.api.common.state.{ListState, ListStateDescriptor, ValueState, ValueStateDescriptor}
+import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 import org.apache.flink.api.scala._
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.TimeCharacteristic
 import org.apache.flink.streaming.api.functions.co.CoProcessFunction.{Context, OnTimerContext}
 import org.apache.flink.streaming.api.functions.co.RichCoProcessFunction
 import org.apache.flink.streaming.api.functions.source.SourceFunction
-import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
+import org.apache.flink.streaming.api.functions.source.SourceFunction.SourceContext
+import org.apache.flink.streaming.api.scala.{DataStream, StreamExecutionEnvironment}
 import org.apache.flink.streaming.api.watermark.Watermark
-import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows
-import org.apache.flink.streaming.api.windowing.time.Time
 import org.apache.flink.util.Collector
 
-import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 
@@ -23,17 +21,48 @@ object LowLatencyEventTimeJoin {
     env.setParallelism(1)
     env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
 
-    //    val tradeStream = env.addSource(tradeSource)
-    //    val customerStream = env.addSource(customerSource)
+    // Simulated trade stream
+    val tradeStream = tradeSource(env)
 
-    //    val joinedStream = tradeStream
-    //      .join(customerStream)
-    //      .where(_.customerId)
-    //      .equalTo(_.customerId)
-    //      .window(TumblingEventTimeWindows.of(Time.milliseconds(4)))
-    //      .apply((t, c) => (t, c))
+    // simulated customer stream
+    val customerStream = customerSource(env)
 
-    val tradeStream = env.addSource((sc: SourceFunction.SourceContext[Trade]) => {
+    val joinedStream = tradeStream
+      .keyBy(_.customerId)
+      .connect(customerStream.keyBy(_.customerId))
+      .process(new EventTimeJoinFunction)
+
+    joinedStream.print()
+
+    env.execute
+  }
+
+  def customerSource(env: StreamExecutionEnvironment): DataStream[Customer] = {
+    // TODO: This is a bit of a hack to use Thread.sleep() for sequencing but it works for our test purposes
+    env.addSource((sc: SourceContext[Customer]) => {
+      sc.collectWithTimestamp(Customer(0, 0, "Customer data @ 0"), 0)
+      sc.emitWatermark(new Watermark(0))
+      Thread.sleep(2000)
+      sc.collectWithTimestamp(Customer(500, 0, "Customer data @ 500"), 500)
+      sc.emitWatermark(new Watermark(500))
+      Thread.sleep(1000)
+      sc.collectWithTimestamp(Customer(1500, 0, "Customer data @ 1500"), 1500)
+      sc.emitWatermark(new Watermark(1500))
+      Thread.sleep(6000)
+      sc.collectWithTimestamp(Customer(1600, 0, "Customer data @ 1600"), 1600)
+      sc.emitWatermark(new Watermark(1600))
+      Thread.sleep(1000)
+      sc.collectWithTimestamp(Customer(2100, 0, "Customer data @ 2100"), 2100)
+      sc.emitWatermark(new Watermark(2100))
+
+      while (true) {
+        Thread.sleep(1000);
+      }
+    })
+  }
+
+  def tradeSource(env: StreamExecutionEnvironment): DataStream[Trade] = {
+    env.addSource((sc: SourceContext[Trade]) => {
       Thread.sleep(1000)
       sc.collectWithTimestamp(Trade(1000, 0, "trade-1"), 1000)
       sc.emitWatermark(new Watermark(1000))
@@ -57,93 +86,29 @@ object LowLatencyEventTimeJoin {
         Thread.sleep(1000)
       }
     })
-
-    val customerStream = env.addSource((sc: SourceFunction.SourceContext[Customer]) => {
-      sc.collectWithTimestamp(Customer(0, 0, "Customer data @ 0"), 0)
-      sc.emitWatermark(new Watermark(0))
-      Thread.sleep(2000)
-      sc.collectWithTimestamp(Customer(500, 0, "Customer data @ 500"), 500)
-      sc.emitWatermark(new Watermark(500))
-      Thread.sleep(1000)
-      sc.collectWithTimestamp(Customer(1500, 0, "Customer data @ 1500"), 1500)
-      sc.emitWatermark(new Watermark(1500))
-      Thread.sleep(6000)
-      sc.collectWithTimestamp(Customer(1600, 0, "Customer data @ 1600"), 1600)
-      sc.emitWatermark(new Watermark(1600))
-
-      sc.emitWatermark(new Watermark(Long.MaxValue)) // do the rest
-
-      while (true) {
-        Thread.sleep(1000);
-      }
-    })
-
-    val joinedStream = tradeStream
-      .keyBy(_.customerId)
-      .connect(customerStream.keyBy(_.customerId))
-      .process(new EventTimeJoinFunction)
-
-    joinedStream.print()
-
-    env.execute
-  }
-
-  def tradeSource: TimeSkewedSource[Trade] = {
-    val EventTimeSkew = 4
-    TimeSkewedSource[Trade](
-      maxEventTimeSkew = EventTimeSkew,
-      intervalMs = 1000,
-      generator = n => {
-        val id = 0 //n % EventTimeSkew
-        Trade(
-          timestamp = n,
-          customerId = id,
-          tradeInfo = s"trade_${id}")
-      })
-  }
-
-  def customerSource: TimeSkewedSource[Customer] = {
-    val EventTimeSkew = 4
-    TimeSkewedSource[Customer](
-      maxEventTimeSkew = EventTimeSkew,
-      intervalMs = 10000,
-      generator = n => {
-        val id = 0 //n % EventTimeSkew
-        Customer(
-          timestamp = n,
-          customerId = id,
-          customerInfo = s"customer_${id}")
-      })
   }
 }
 
 class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, EnrichedTrade] {
 
-  private var tradeBufferState: ValueState[mutable.PriorityQueue[Trade]] = null
+  private var tradeBufferState: ValueState[mutable.PriorityQueue[EnrichedTrade]] = null
   private var customerBufferState: ValueState[mutable.PriorityQueue[Customer]] = null
 
-  // TODO: This will not work -- need to keep this value per trade
-  private var initialJoinResultState: ValueState[EnrichedTrade] = null
-
   override def open(parameters: Configuration): Unit = {
-    implicit val tradeOrdering = Ordering.by((t: Trade) => t.timestamp)
+    implicit val tradeOrdering = Ordering.by((t: EnrichedTrade) => t.trade.timestamp)
     implicit val customerOrdering = Ordering.by((c: Customer) => c.timestamp)
-    tradeBufferState = getRuntimeContext.getState(new ValueStateDescriptor[mutable.PriorityQueue[Trade]]("tradeBuffer", createTypeInformation[mutable.PriorityQueue[Trade]], new mutable.PriorityQueue[Trade]))
+    tradeBufferState = getRuntimeContext.getState(new ValueStateDescriptor[mutable.PriorityQueue[EnrichedTrade]]("tradeBuffer", createTypeInformation[mutable.PriorityQueue[EnrichedTrade]], new mutable.PriorityQueue[EnrichedTrade]))
     customerBufferState = getRuntimeContext.getState(new ValueStateDescriptor[mutable.PriorityQueue[Customer]]("customerBuffer", createTypeInformation[mutable.PriorityQueue[Customer]], new mutable.PriorityQueue[Customer]))
-    initialJoinResultState = getRuntimeContext.getState(new ValueStateDescriptor[EnrichedTrade]("initialJoinResult", createTypeInformation[EnrichedTrade], null))
   }
 
   override def processElement1(trade: Trade, context: Context, collector: Collector[EnrichedTrade]): Unit = {
-
-    // TODO : Handle late data -- probably detect and join against what, latest?  Drop it?
-
+    // TODO : Handle late data -- detect and join against what, latest?  Drop it?
     val timerService = context.timerService()
     val joinedData = join(trade)
-    initialJoinResultState.update(joinedData)
     collector.collect(joinedData)
     if (context.timestamp() > timerService.currentWatermark()) {
       val tradeBuffer = tradeBufferState.value()
-      tradeBuffer.enqueue(trade)
+      tradeBuffer.enqueue(joinedData)
       tradeBufferState.update(tradeBuffer)
       timerService.registerEventTimeTimer(trade.timestamp)
     }
@@ -159,10 +124,12 @@ class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, Enric
     // look for trades that can now be completed, do the join, and remove from the tradebuffer
     val tradeBuffer = tradeBufferState.value()
     val watermark = context.timerService().currentWatermark()
-    while (tradeBuffer.headOption.map(_.timestamp).getOrElse(Long.MaxValue) <= watermark) {
-      val trade = tradeBuffer.dequeue()
-      val joinedData = join(trade)
-      if (!joinedData.equals(initialJoinResultState.value())) {
+    while (tradeBuffer.headOption.map(_.trade.timestamp).getOrElse(Long.MaxValue) <= watermark) {
+      val enrichedTrade = tradeBuffer.dequeue()
+      val joinedData = join(enrichedTrade.trade)
+
+      // Only emit again if we have better data
+      if (!joinedData.equals(enrichedTrade)) {
         collector.collect(joinedData)
       }
     }
