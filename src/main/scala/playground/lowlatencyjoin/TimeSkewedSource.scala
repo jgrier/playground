@@ -1,4 +1,4 @@
-package playground.deutschebank
+package playground.lowlatencyjoin
 
 import org.apache.flink.streaming.api.checkpoint.Checkpointed
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction

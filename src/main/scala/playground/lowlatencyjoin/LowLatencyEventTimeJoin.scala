@@ -1,4 +1,4 @@
-package playground.deutschebank
+package playground.lowlatencyjoin
 
 import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 import org.apache.flink.api.scala._
