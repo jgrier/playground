@@ -21,10 +21,10 @@ object LowLatencyEventTimeJoin {
     env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
 
     // Simulated trade stream
-    val tradeStream = tradeSource(env)
+    val tradeStream = Sources.tradeSource(env)
 
     // simulated customer stream
-    val customerStream = customerSource(env)
+    val customerStream = Sources.customerSource(env)
 
     val joinedStream = tradeStream
       .keyBy(_.customerId)
@@ -35,67 +35,6 @@ object LowLatencyEventTimeJoin {
 
     env.execute
   }
-
-  /**
-    * This source generates a stream of customer events (CDC info)
-    * @param env
-    * @return
-    */
-  def customerSource(env: StreamExecutionEnvironment): DataStream[Customer] = {
-    // TODO: This is a bit of a hack to use Thread.sleep() for sequencing but it works for our test purposes
-    env.addSource((sc: SourceContext[Customer]) => {
-      sc.collectWithTimestamp(Customer(0, 0, "Customer data @ 0"), 0)
-      sc.emitWatermark(new Watermark(0))
-      Thread.sleep(2000)
-      sc.collectWithTimestamp(Customer(500, 0, "Customer data @ 500"), 500)
-      sc.emitWatermark(new Watermark(500))
-      Thread.sleep(1000)
-      sc.collectWithTimestamp(Customer(1500, 0, "Customer data @ 1500"), 1500)
-      sc.emitWatermark(new Watermark(1500))
-      Thread.sleep(6000)
-      sc.collectWithTimestamp(Customer(1600, 0, "Customer data @ 1600"), 1600)
-      sc.emitWatermark(new Watermark(1600))
-      Thread.sleep(1000)
-      sc.collectWithTimestamp(Customer(2100, 0, "Customer data @ 2100"), 2100)
-      sc.emitWatermark(new Watermark(2100))
-
-      while (true) {
-        Thread.sleep(1000);
-      }
-    })
-  }
-
-  /**
-    * This source generates the stream of trades
-    * @param env
-    * @return
-    */
-  def tradeSource(env: StreamExecutionEnvironment): DataStream[Trade] = {
-    env.addSource((sc: SourceContext[Trade]) => {
-      Thread.sleep(1000)
-      sc.collectWithTimestamp(Trade(1000, 0, "trade-1"), 1000)
-      sc.emitWatermark(new Watermark(1000))
-      Thread.sleep(3000)
-      sc.collectWithTimestamp(Trade(1200, 0, "trade-2"), 1200)
-      sc.emitWatermark(new Watermark(1200))
-      Thread.sleep(1000)
-      sc.collectWithTimestamp(Trade(1500, 0, "trade-3"), 1500)
-      sc.emitWatermark(new Watermark(1500))
-      Thread.sleep(1000)
-      sc.collectWithTimestamp(Trade(1700, 0, "trade-4"), 1700)
-      sc.emitWatermark(new Watermark(1700))
-      Thread.sleep(1000)
-      sc.collectWithTimestamp(Trade(1800, 0, "trade-5"), 1800)
-      sc.emitWatermark(new Watermark(1800))
-      Thread.sleep(1000)
-      sc.collectWithTimestamp(Trade(2000, 0, "trade-6"), 2000)
-      sc.emitWatermark(new Watermark(2000))
-
-      while (true) {
-        Thread.sleep(1000)
-      }
-    })
-  }
 }
 
 /**
@@ -103,13 +42,14 @@ object LowLatencyEventTimeJoin {
   * Basically, what we do is the following:
   *
   * 1) When we receive a trade we join it against the customer data right away, however
-  *    to keep this 100% deterministic we join against the latest customer data that
-  *    has a timestamp LESS THAN the trade timestamp -- not simply the latest available data.
-  *    In other words we are joining against the customer data that we knew at the time of the trade.
+  * to keep this 100% deterministic we join against the latest customer data that
+  * has a timestamp LESS THAN the trade timestamp -- not simply the latest available data.
+  * In other words we are joining against the customer data that we knew at the time of the trade.
+  *
   * 2) We also set a trigger to evaluate the trade again once the watermark has passed the trade
-  *    time.  Basically, what we're doing here is using event time to ensure that we have
-  *    "complete" data and then joining again at that time.  This will give us a deterministic
-  *    result even in the face of undordered data, etc
+  * time.  Basically, what we're doing here is using event time to ensure that we have
+  * "complete" data and then joining again at that time.  This will give us a deterministic
+  * result even in the face of undordered data, etc
   *
   * This approach has the benefit that you don't introduce any latency into the trade stream
   * because you always join right away.  You then emit a BETTER result if you receive better
@@ -192,5 +132,70 @@ class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, Enric
       .getOrElse("No customer info available")
 
     EnrichedTrade(trade, customerInfo)
+  }
+}
+
+object Sources {
+  /**
+    * This source generates a stream of customer events (CDC info)
+    *
+    * @param env
+    * @return
+    */
+  def customerSource(env: StreamExecutionEnvironment): DataStream[Customer] = {
+    // TODO: This is a bit of a hack to use Thread.sleep() for sequencing but it works for our test purposes
+    env.addSource((sc: SourceContext[Customer]) => {
+      sc.collectWithTimestamp(Customer(0, 0, "Customer data @ 0"), 0)
+      sc.emitWatermark(new Watermark(0))
+      Thread.sleep(2000)
+      sc.collectWithTimestamp(Customer(500, 0, "Customer data @ 500"), 500)
+      sc.emitWatermark(new Watermark(500))
+      Thread.sleep(1000)
+      sc.collectWithTimestamp(Customer(1500, 0, "Customer data @ 1500"), 1500)
+      sc.emitWatermark(new Watermark(1500))
+      Thread.sleep(6000)
+      sc.collectWithTimestamp(Customer(1600, 0, "Customer data @ 1600"), 1600)
+      sc.emitWatermark(new Watermark(1600))
+      Thread.sleep(1000)
+      sc.collectWithTimestamp(Customer(2100, 0, "Customer data @ 2100"), 2100)
+      sc.emitWatermark(new Watermark(2100))
+
+      while (true) {
+        Thread.sleep(1000);
+      }
+    })
+  }
+
+  /**
+    * This source generates the stream of trades
+    *
+    * @param env
+    * @return
+    */
+  def tradeSource(env: StreamExecutionEnvironment): DataStream[Trade] = {
+    env.addSource((sc: SourceContext[Trade]) => {
+      Thread.sleep(1000)
+      sc.collectWithTimestamp(Trade(1000, 0, "trade-1"), 1000)
+      sc.emitWatermark(new Watermark(1000))
+      Thread.sleep(3000)
+      sc.collectWithTimestamp(Trade(1200, 0, "trade-2"), 1200)
+      sc.emitWatermark(new Watermark(1200))
+      Thread.sleep(1000)
+      sc.collectWithTimestamp(Trade(1500, 0, "trade-3"), 1500)
+      sc.emitWatermark(new Watermark(1500))
+      Thread.sleep(1000)
+      sc.collectWithTimestamp(Trade(1700, 0, "trade-4"), 1700)
+      sc.emitWatermark(new Watermark(1700))
+      Thread.sleep(1000)
+      sc.collectWithTimestamp(Trade(1800, 0, "trade-5"), 1800)
+      sc.emitWatermark(new Watermark(1800))
+      Thread.sleep(1000)
+      sc.collectWithTimestamp(Trade(2000, 0, "trade-6"), 2000)
+      sc.emitWatermark(new Watermark(2000))
+
+      while (true) {
+        Thread.sleep(1000)
+      }
+    })
   }
 }
