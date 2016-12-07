@@ -6,7 +6,6 @@ import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.TimeCharacteristic
 import org.apache.flink.streaming.api.functions.co.CoProcessFunction.{Context, OnTimerContext}
 import org.apache.flink.streaming.api.functions.co.RichCoProcessFunction
-import org.apache.flink.streaming.api.functions.source.SourceFunction
 import org.apache.flink.streaming.api.functions.source.SourceFunction.SourceContext
 import org.apache.flink.streaming.api.scala.{DataStream, StreamExecutionEnvironment}
 import org.apache.flink.streaming.api.watermark.Watermark
@@ -37,6 +36,11 @@ object LowLatencyEventTimeJoin {
     env.execute
   }
 
+  /**
+    * This source generates a stream of customer events (CDC info)
+    * @param env
+    * @return
+    */
   def customerSource(env: StreamExecutionEnvironment): DataStream[Customer] = {
     // TODO: This is a bit of a hack to use Thread.sleep() for sequencing but it works for our test purposes
     env.addSource((sc: SourceContext[Customer]) => {
@@ -61,6 +65,11 @@ object LowLatencyEventTimeJoin {
     })
   }
 
+  /**
+    * This source generates the stream of trades
+    * @param env
+    * @return
+    */
   def tradeSource(env: StreamExecutionEnvironment): DataStream[Trade] = {
     env.addSource((sc: SourceContext[Trade]) => {
       Thread.sleep(1000)
@@ -89,6 +98,26 @@ object LowLatencyEventTimeJoin {
   }
 }
 
+/**
+  * This is a homegrown join function using the new Flink 1.2 ProcessFunction.
+  * Basically, what we do is the following:
+  *
+  * 1) When we receive a trade we join it against the customer data right away, however
+  *    to keep this 100% deterministic we join against the latest customer data that
+  *    has a timestamp LESS THAN the trade timestamp -- not simply the latest available data.
+  *    In other words we are joining against the customer data that we knew at the time of the trade.
+  * 2) We also set a trigger to evaluate the trade again once the watermark has passed the trade
+  *    time.  Basically, what we're doing here is using event time to ensure that we have
+  *    "complete" data and then joining again at that time.  This will give us a deterministic
+  *    result even in the face of undordered data, etc
+  *
+  * This approach has the benefit that you don't introduce any latency into the trade stream
+  * because you always join right away.  You then emit a BETTER result if you receive better
+  * information.  We use event time in order to know how long we must wait for this potential
+  * better information.
+  *
+  * We also use event time to know when it's safe to expire state.
+  */
 class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, EnrichedTrade] {
 
   private var tradeBufferState: ValueState[mutable.PriorityQueue[EnrichedTrade]] = null
@@ -102,6 +131,7 @@ class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, Enric
   }
 
   override def processElement1(trade: Trade, context: Context, collector: Collector[EnrichedTrade]): Unit = {
+    println(s"Received: $trade")
     // TODO : Handle late data -- detect and join against what, latest?  Drop it?
     val timerService = context.timerService()
     val joinedData = join(trade)
@@ -115,6 +145,7 @@ class EventTimeJoinFunction extends RichCoProcessFunction[Trade, Customer, Enric
   }
 
   override def processElement2(customer: Customer, context: Context, collector: Collector[EnrichedTrade]): Unit = {
+    println(s"Received $customer")
     val customerBuffer = customerBufferState.value()
     customerBuffer.enqueue(customer)
     customerBufferState.update(customerBuffer)
