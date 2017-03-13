@@ -1,0 +1,1 @@
+flink run -s file:/tmp/flink-savepoints/savepoint-0cd4625ffa0c -c playground.trading.TradingJob -d target/quickstart-0.1.jar

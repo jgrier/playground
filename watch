@@ -1,0 +1,1 @@
+watch -n 0.1 java -cp target/quickstart-0.1.jar:/Users/jgrier/tools/flink-1.2.0/lib/flink-dist_2.10-1.2.0.jar  playground.trading.PositionQuery -job cd340c10054b758a6272c95f54d6fdf3 -symbols GOOG,AAPL,TWTR
