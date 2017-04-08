@@ -2,11 +2,11 @@ package playground.trading
 
 import scala.util.Try
 
-object BidAsk {
-  def fromString(s: String): Try[BidAsk] = {
+object Bid {
+  def fromString(s: String): Try[Bid] = {
     val parts = s.split(",")
     Try(
-      new BidAsk(
+      new Bid(
         parts(0),
         parts(1).toLong,
         parts(2).toFloat
@@ -15,7 +15,6 @@ object BidAsk {
   }
 }
 
-case class BidAsk(symbol: String, quantity: Long, price: Float) {
+case class Bid(symbol: String, quantity: Long, price: Float) {
   def value = quantity * price
-  def isBid = quantity > 0
 }

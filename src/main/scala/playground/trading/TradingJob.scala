@@ -9,23 +9,23 @@ object TradingJob {
     val env = StreamExecutionEnvironment.getExecutionEnvironment
 
     val PositionPort = 2000
-    val BidAskPort = 3000
+    val BidPort = 3000
     val PositionHost = "localhost"
-    val BidAskHost = "localhost"
+    val BidHost = "localhost"
 
-    val orders = env.socketTextStream(PositionHost, PositionPort)
+    val positions = env.socketTextStream(PositionHost, PositionPort)
       .map(Position.fromString(_))
       .flatMap(BadDataHandler[Position])
       .keyBy(_.symbol)
 
-    val fills = env.socketTextStream(BidAskHost, BidAskPort)
-      .map(BidAsk.fromString(_))
-      .flatMap(BadDataHandler[BidAsk])
+    val quotes = env.socketTextStream(BidHost, BidPort)
+      .map(Bid.fromString(_))
+      .flatMap(BadDataHandler[Bid])
       .keyBy(_.symbol)
 
-    orders
-      .connect(fills)
-      .process(PositionManager())
+    positions
+      .connect(quotes)
+      .process(TradeEngine())
       .print()
 
     env.execute()
