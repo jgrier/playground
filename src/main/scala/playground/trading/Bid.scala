@@ -7,14 +7,19 @@ object Bid {
     val parts = s.split(",")
     Try(
       new Bid(
-        parts(0),
-        parts(1).toLong,
-        parts(2).toFloat
+        timestamp = System.currentTimeMillis(),
+        symbol = parts(0),
+        quantity = parts(1).toLong,
+        price = parts(2).toFloat
       )
     )
   }
 }
 
-case class Bid(symbol: String, quantity: Long, price: Float) {
+case class Bid(timestamp: Long, symbol: String, quantity: Long, price: Float) {
   def value = quantity * price
+
+  override def toString: String = {
+    s"${symbol},${quantity},${price}"
+  }
 }
