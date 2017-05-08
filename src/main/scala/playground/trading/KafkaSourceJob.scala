@@ -17,11 +17,25 @@ object KafkaSourceJob {
     val positions = env.socketTextStream(PositionHost, PositionPort)
       .map(Position.fromString(_, timeOffsetMode = true))
       .flatMap(BadDataHandler[Position])
-      .addSink(new FlinkKafkaProducer09[Position]("localhost:9092", "positions", new PositionSerializationSchema))
 
     val quotes = env.socketTextStream(BidHost, BidPort)
       .map(Bid.fromString(_))
       .flatMap(BadDataHandler[Bid])
+
+    val watermarks = env.addSource(new WatermarkSource(100))
+
+    positions
+      .connect(watermarks)
+      .map(new WatermarkerFunction[Position](
+        elementFactory = (p, wm) => p.copy(timestamp = wm),
+        watermarkFactory = wm => Position(wm, "WMK", 0, 0, 0, 0, 0, 0)))
+      .addSink(new FlinkKafkaProducer09[Position]("localhost:9092", "positions", new PositionSerializationSchema))
+
+    val quotesWithWatermarks = quotes
+      .connect(watermarks)
+      .map(new WatermarkerFunction[Bid](
+        elementFactory = (bid, wm) => bid.copy(timestamp = wm),
+        watermarkFactory = wm => Bid(wm, "WMK", 0, 0)))
       .addSink(new FlinkKafkaProducer09[Bid]("localhost:9092", "quotes", new BidSerializationSchema))
 
     env.execute()
